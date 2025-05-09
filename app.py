@@ -38,7 +38,8 @@ def process_uploaded_files(uploaded_files, column_names):
     year_month_counts = defaultdict(lambda: defaultdict(int))
     for name, content in zip(column_names, uploaded_files):
         try:
-            doc = Document(io.BytesIO(content.read()))  # Added .read() here
+            file_bytes = content.getvalue()  # 使用 getvalue() 來獲取檔案內容
+            doc = Document(io.BytesIO(file_bytes))
             for para in doc.paragraphs:
                 match = date_pattern.search(para.text)
                 if match:
@@ -83,33 +84,36 @@ def plot_data(year_month_counts, original_column_names, new_column_names):  # Ad
     st.pyplot(fig)  # Use st.pyplot to display the plot
 
 def parse_list_docx(file_content):
-    doc = Document(io.BytesIO(file_content))
-    text_content = "\n".join(p.text for p in doc.paragraphs)
-    soup = BeautifulSoup(text_content, "html.parser")
-    items = []
-    
-    # 嘗試解析文檔中的項目
-    # 注意：因為這是從Word檔解析而不是真正的HTML，此處可能需要調整
-    lines = text_content.split('\n')
-    for line in lines:
-        date_match = re.search(r'\[(202\d-\d{1,2}-\d{1,2})\]', line)
-        if date_match:
-            date_str = date_match.group(1)
-            # 從日期後取得標題和URL
-            title_match = re.search(r'\]\s*(.*?)(?:\s*http|$)', line)
-            url_match = re.search(r'(https?://[^\s]+)', line)
-            
-            title = title_match.group(1).strip() if title_match else ""
-            url = url_match.group(1).strip() if url_match else ""
-            
-            try:
-                dt = datetime.strptime(date_str, "%Y-%m-%d")
-                if datetime(2020, 1, 1) <= dt <= datetime(2025, 4, 30):
-                    items.append({"date": dt, "title": title, "url": url})
-            except:
-                continue
-    
-    return items
+    try:
+        doc = Document(io.BytesIO(file_content))
+        text_content = "\n".join(p.text for p in doc.paragraphs)
+        items = []
+        
+        # 嘗試解析文檔中的項目
+        # 注意：因為這是從Word檔解析而不是真正的HTML，此處可能需要調整
+        lines = text_content.split('\n')
+        for line in lines:
+            date_match = re.search(r'\[(202\d-\d{1,2}-\d{1,2})\]', line)
+            if date_match:
+                date_str = date_match.group(1)
+                # 從日期後取得標題和URL
+                title_match = re.search(r'\]\s*(.*?)(?:\s*http|$)', line)
+                url_match = re.search(r'(https?://[^\s]+)', line)
+                
+                title = title_match.group(1).strip() if title_match else ""
+                url = url_match.group(1).strip() if url_match else ""
+                
+                try:
+                    dt = datetime.strptime(date_str, "%Y-%m-%d")
+                    if datetime(2020, 1, 1) <= dt <= datetime(2025, 4, 30):
+                        items.append({"date": dt, "title": title, "url": url})
+                except:
+                    continue
+        
+        return items
+    except Exception as e:
+        st.error(f"解析文件時發生錯誤: {e}")
+        return []
 
 def fetch_content(url):
     try:
@@ -151,7 +155,8 @@ uploaded_file_keyword = st.file_uploader("上傳單個Word檔案以進行關鍵�
 
 if uploaded_file_keyword is not None:
     try:
-        document = Document(io.BytesIO(uploaded_file_keyword.read()))
+        file_bytes = uploaded_file_keyword.getvalue()  # 使用 getvalue() 獲取檔案內容
+        document = Document(io.BytesIO(file_bytes))
         text_for_analysis = "\n".join([para.text for para in document.paragraphs])
         pattern = r"\b(2020|2021|2022|2023|2024|2025)-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])\b"
         matches = re.findall(pattern, text_for_analysis)
@@ -197,24 +202,31 @@ uploaded_file_list = st.file_uploader("上傳包含新聞列表的Word檔案", t
 
 if uploaded_file_list:
     try:
-        all_items = parse_list_docx(uploaded_file_list.read())
-        st.success(f"✅ 擷取到 {len(all_items)} 篇新聞列表")
+        file_bytes = uploaded_file_list.getvalue()  # 使用 getvalue() 獲取檔案內容
+        all_items = parse_list_docx(file_bytes)
         
-        contents = []
-        titles = []
-        
-        # Use st.spinner() to show a loading message during scraping
-        with st.spinner(f"⏳ 正在爬取全部 {len(all_items)} 篇新聞稿全文..."):
-            for i, item in enumerate(all_items):
-                titles.append(item["title"])
-                if item["url"].startswith("http"):
-                    content = fetch_content(item["url"])
-                    contents.append(content)
-                else:
-                    contents.append("")
-        
-        successful_fetches = sum(1 for c in contents if c)
-        st.success(f"✅ 完成，共成功擷取 {successful_fetches} 篇內容。")
+        if all_items:
+            st.success(f"✅ 擷取到 {len(all_items)} 篇新聞列表")
+            
+            contents = []
+            titles = []
+            
+            # Use st.spinner() to show a loading message during scraping
+            with st.spinner(f"⏳ 正在爬取全部 {len(all_items)} 篇新聞稿全文..."):
+                for i, item in enumerate(all_items):
+                    titles.append(item["title"])
+                    if item["url"].startswith("http"):
+                        content = fetch_content(item["url"])
+                        contents.append(content)
+                    else:
+                        contents.append("")
+            
+            successful_fetches = sum(1 for c in contents if c)
+            st.success(f"✅ 完成，共成功擷取 {successful_fetches} 篇內容。")
+        else:
+            st.warning("未能從文件中擷取到新聞列表，請確認文件格式是否正確。")
+    except Exception as e:
+        st.error(f"處理文件時發生錯誤: {e}")
         
         all_text = "\n".join(contents)
         keywords_weighted = jieba.analyse.extract_tags(
