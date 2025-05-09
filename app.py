@@ -13,6 +13,7 @@ import jieba
 import jieba.analyse
 from collections import Counter
 from tqdm import tqdm  # Can be used with Streamlit, but careful with output
+import os
 
 # --- Font Setup (Local Workaround) ---
 # This is NOT deployment-friendly.  For deployment, ensure the font is available
@@ -224,24 +225,4 @@ if uploaded_file_list:
         filtered_keywords = [w for w, _ in keywords_weighted]
         all_words = jieba.lcut(all_text)
         filtered_words = [w for w in all_words if w in filtered_keywords and len(w) > 1]
-        freq_counter = Counter(filtered_words)
-
-        st.subheader("實際出現次數統計")
-        for word, freq in freq_counter.most_common():
-            st.write(f"{word}: {freq} 次")
-
-        # Create a DataFrame for download
-        results_df = pd.DataFrame({
-            "title": titles,
-            "content": contents
-        })
-        csv = results_df.to_csv(index=False, encoding='utf-8-sig')  # Ensure proper encoding
-        st.download_button(
-            label="下載包含標題和內容的CSV文件",
-            data=csv,
-            file_name="news_contents.csv",
-            mime="text/csv"
-        )
-
-    except Exception as e:
-        st.error(f"Error processing file: {e}")
+        freq_counter =
