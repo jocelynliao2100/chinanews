@@ -1,248 +1,249 @@
+# streamlit_app.py
+
 import streamlit as st
 from docx import Document
-from collections import defaultdict
+from collections import defaultdict, Counter
 import matplotlib.pyplot as plt
 import re
 from datetime import datetime
 import io
-from matplotlib.font_manager import FontProperties
 import pandas as pd
-from bs4 import BeautifulSoup
-import requests
-import jieba
-import jieba.analyse
-from collections import Counter
-from tqdm import tqdm  # Can be used with Streamlit, but careful with output
 import os
 
-# --- Font Setup (Local Workaround) ---
-# This is NOT deployment-friendly. For deployment, ensure the font is available
-# in the environment.
-LOCAL_FONT_PATH = './NotoSansCJKjp-Regular.otf'  # Change if you have a different path
+# 嘗試載入 jieba
+import jieba
+import jieba.analyse
+
+# 嘗試載入 BeautifulSoup，若不存在就設為 None
+try:
+    from bs4 import BeautifulSoup
+except ImportError:
+    BeautifulSoup = None
+# 嘗試載入 tqdm，若不存在就用 identity function
+try:
+    from tqdm import tqdm
+except ImportError:
+    tqdm = lambda x: x
+
+# --- Font Setup ---
+from matplotlib.font_manager import FontProperties
+
+LOCAL_FONT_PATH = "NotoSansCJKtc-Regular.otf"  # 放在同目錄
 font_installed = False
+font_prop = None
 if os.path.exists(LOCAL_FONT_PATH):
     try:
-        font = FontProperties(fname=LOCAL_FONT_PATH)
-        plt.rcParams['font.sans-serif'] = ['Noto Sans CJK TC', 'Noto Sans CJK SC', 'Noto Sans CJK JP']
-        plt.rcParams['axes.unicode_minus'] = False
+        font_prop = FontProperties(fname=LOCAL_FONT_PATH)
+        plt.rcParams["font.family"] = font_prop.get_name()
+        plt.rcParams["axes.unicode_minus"] = False
         font_installed = True
     except Exception as e:
-        st.warning(f"Font loading issue: {e}. Plots may not display correctly.")
+        st.warning(f"載入字體失敗，將使用預設字體：{e}")
+        plt.rcParams["axes.unicode_minus"] = False
 else:
-    st.warning("Font file not found. Plots may not display correctly.")
+    st.info(f"找不到 {LOCAL_FONT_PATH}，如需中文請自行部署字體。")
+    plt.rcParams["axes.unicode_minus"] = False
 
-# --- Helper Functions ---
-@st.cache_data  # Cache the result to avoid re-processing on every interaction
-def process_uploaded_files(uploaded_files, column_names):
-    date_pattern = re.compile(r"\b(202[0-5])(?:-|年|\/|\.)(0?[1-9]|1[0-2])(?:-|月|\/|\.)(0?[1-9]|[12]\d|3[01])(?:日)?\b")
-    year_month_counts = defaultdict(lambda: defaultdict(int))
-    for name, content in zip(column_names, uploaded_files):
-        try:
-            file_bytes = content.getvalue()  # 使用 getvalue() 來獲取檔案內容
-            doc = Document(io.BytesIO(file_bytes))
-            for para in doc.paragraphs:
-                match = date_pattern.search(para.text)
-                if match:
-                    year_str, month_str, _ = match.groups()
-                    try:
-                        date_obj = datetime(int(year_str), int(month_str), 1)
-                        start_date = datetime(2020, 1, 1)
-                        end_date = datetime(2025, 4, 30)
-                        if start_date <= date_obj <= end_date:
-                            year_month_key = f"{year_str}-{int(month_str):02d}"
-                            year_month_counts[name][year_month_key] += 1
-                    except ValueError:
-                        continue
-        except Exception as e:
-            st.error(f"Error processing file {name}: {e}")
-    return year_month_counts
+st.set_page_config(page_title="國台辦新聞稿分析", layout="wide")
+st.title("🇨🇳 國台辦新聞稿分析工具")
 
-def plot_data(year_month_counts, original_column_names, new_column_names):  # Added new_column_names parameter
-    all_months = sorted(set(k for d in year_month_counts.values() for k in d.keys()))
-    fig, ax = plt.subplots(figsize=(12, 6))  # Create figure and axes
-    for i, original_name in enumerate(original_column_names):
-        counts = year_month_counts.get(original_name, {})
-        y_vals = [counts.get(month, 0) for month in all_months]
+# ========== Helper Functions ==========
+
+@st.cache_data(show_spinner=False)
+def process_uploaded_files(uploaded_files, col_names):
+    """
+    讀入多個 .docx，解析段落中的日期 (2020-01 ~ 2025-04)，
+    回傳 {col_name: { "YYYY-MM": count }} 結構。
+    """
+    date_re = re.compile(
+        r"\b(202[0-5])[-/年\.](0?[1-9]|1[0-2])[-/月\.](0?[1-9]|[12]\d|3[01])日?\b"
+    )
+    counts = defaultdict(lambda: defaultdict(int))
+
+    for name, uploaded in zip(col_names, uploaded_files):
+        data = uploaded.getvalue()
+        doc = Document(io.BytesIO(data))
+        for para in doc.paragraphs:
+            m = date_re.search(para.text)
+            if not m:
+                continue
+            y, mth, _ = m.groups()
+            ym = f"{y}-{int(mth):02d}"
+            dt = datetime(int(y), int(mth), 1)
+            if datetime(2020, 1, 1) <= dt <= datetime(2025, 4, 30):
+                counts[name][ym] += 1
+    return counts
+
+def plot_counts(counts, col_names, display_names):
+    """
+    繪製折線圖，並在 Streamlit 中顯示。
+    """
+    # 先收集所有月份
+    all_months = sorted({ym for d in counts.values() for ym in d})
+    # 轉成 datetime list，並格式化 labels
+    dates = [datetime.strptime(ym, "%Y-%m") for ym in all_months]
+
+    fig, ax = plt.subplots(figsize=(12, 6))
+    for orig, disp in zip(col_names, display_names):
+        yvals = [counts[orig].get(ym, 0) for ym in all_months]
         if font_installed:
-            ax.plot(all_months, y_vals, label=new_column_names[i], fontproperties=font)
+            ax.plot(dates, yvals, marker="o", label=disp, fontproperties=font_prop)
         else:
-            ax.plot(all_months, y_vals, label=new_column_names[i])
-    
-    if font_installed:
-        ax.set_title("2020年1月至2025年4月 國台辦各欄目新聞稿數量變化", fontproperties=font)
-        ax.set_xlabel("年份-月份", fontproperties=font)
-        ax.set_ylabel("新聞稿數量", fontproperties=font)
-    else:
-        ax.set_title("2020年1月至2025年4月 國台辦各欄目新聞稿數量變化")
-        ax.set_xlabel("年份-月份")
-        ax.set_ylabel("新聞稿數量")
-    
-    plt.xticks(rotation=45)
-    ax.legend()
-    plt.tight_layout()
-    plt.grid(True)
-    st.pyplot(fig)  # Use st.pyplot to display the plot
+            ax.plot(dates, yvals, marker="o", label=disp)
 
-def parse_list_docx(file_content):
+    title = "2020.01–2025.04 國台辦各欄目新聞稿數量變化"
+    if font_installed:
+        ax.set_title(title, fontproperties=font_prop)
+        ax.set_xlabel("年月", fontproperties=font_prop)
+        ax.set_ylabel("數量", fontproperties=font_prop)
+    else:
+        ax.set_title(title)
+        ax.set_xlabel("年月")
+        ax.set_ylabel("數量")
+
+    ax.legend()
+    ax.grid(True)
+    plt.xticks(rotation=45)
+    st.pyplot(fig)
+
+def parse_list_docx(file_bytes):
+    """
+    從 Word 解析出 [YYYY-MM-DD] 標記的標題與 URL 列表。
+    回傳 list of dict(date, title, url)。
+    """
     try:
-        doc = Document(io.BytesIO(file_content))
-        text_content = "\n".join(p.text for p in doc.paragraphs)
+        doc = Document(io.BytesIO(file_bytes))
+        text = "\n".join(p.text for p in doc.paragraphs)
         items = []
-        
-        # 嘗試解析文檔中的項目
-        # 注意：因為這是從Word檔解析而不是真正的HTML，此處可能需要調整
-        lines = text_content.split('\n')
-        for line in lines:
-            date_match = re.search(r'\[(202\d-\d{1,2}-\d{1,2})\]', line)
-            if date_match:
-                date_str = date_match.group(1)
-                # 從日期後取得標題和URL
-                title_match = re.search(r'\]\s*(.*?)(?:\s*http|$)', line)
-                url_match = re.search(r'(https?://[^\s]+)', line)
-                
-                title = title_match.group(1).strip() if title_match else ""
-                url = url_match.group(1).strip() if url_match else ""
-                
-                try:
-                    dt = datetime.strptime(date_str, "%Y-%m-%d")
-                    if datetime(2020, 1, 1) <= dt <= datetime(2025, 4, 30):
-                        items.append({"date": dt, "title": title, "url": url})
-                except:
-                    continue
-        
+        for line in text.splitlines():
+            dm = re.search(r"\[(202\d-\d{1,2}-\d{1,2})\]", line)
+            if not dm:
+                continue
+            date_str = dm.group(1)
+            tm = re.search(r"\]\s*(.*?)\s*(http", line)
+            um = re.search(r"(https?://\S+)", line)
+            title = tm.group(1).strip() if tm else ""
+            url = um.group(1).strip() if um else ""
+            try:
+                dt = datetime.strptime(date_str, "%Y-%m-%d")
+                if datetime(2020,1,1) <= dt <= datetime(2025,4,30):
+                    items.append({"date": dt, "title": title, "url": url})
+            except:
+                continue
         return items
     except Exception as e:
-        st.error(f"解析文件時發生錯誤: {e}")
+        st.error(f"解析列表失敗：{e}")
         return []
 
 def fetch_content(url):
+    """
+    簡單用 requests + BeautifulSoup 抓取 class="TRS_Editor" 的文字。
+    """
+    if BeautifulSoup is None:
+        return ""
     try:
-        resp = requests.get(url, timeout=5)
-        resp.encoding = 'gb2312'
-        soup = BeautifulSoup(resp.text, 'html.parser')
-        editor = soup.find('div', class_='TRS_Editor')
-        return editor.get_text(separator='\n').strip() if editor else ''
+        r = requests.get(url, timeout=5)
+        r.encoding = r.apparent_encoding
+        soup = BeautifulSoup(r.text, "html.parser")
+        editor = soup.find("div", class_="TRS_Editor")
+        return editor.get_text("\n").strip() if editor else ""
     except Exception as e:
-        st.warning(f"⚠️ Could not read {url}: {e}")
-        return ''
+        st.warning(f"抓取 {url} 失敗：{e}")
+        return ""
 
-# --- Main Streamlit App ---
-st.title("國台辦新聞稿分析")
+# ========== 主程式 ==========
 
-# 第一部分：檔案上傳與新聞稿數量變化
-st.header("新聞稿數量變化分析")
-uploaded_files_count = st.file_uploader("上傳五個Word檔案", type="docx", accept_multiple_files=True)
-new_column_names = ["台辦動態", "交流交往", "政務要聞", "部門涉台", "新聞發佈"]
+# 1️⃣ 新聞稿數量變化
+st.header("1. 新聞稿數量變化分析")
 
-if uploaded_files_count and len(uploaded_files_count) == 5:
-    original_column_names = [file.name for file in uploaded_files_count]  # Get filenames
-    year_month_counts = process_uploaded_files(uploaded_files_count, original_column_names)
-    if year_month_counts:
-        plot_data(year_month_counts, original_column_names, new_column_names)  # Added new_column_names
+uploaded_counts = st.file_uploader(
+    "一次上傳五個 .docx 檔案 (台辦動態、交流交往、政務要聞、部門涉台、新聞發佈)",
+    type="docx", accept_multiple_files=True, key="uploader_counts"
+)
+
+display_names = ["台辦動態", "交流交往", "政務要聞", "部門涉台", "新聞發佈"]
+
+if uploaded_counts:
+    if len(uploaded_counts) != 5:
+        st.warning(f"請上傳五個檔，目前 {len(uploaded_counts)} 個")
     else:
-        st.warning("No data to plot.")
-elif uploaded_files_count:
-    st.warning(f"請上傳五個檔案。目前已上傳 {len(uploaded_files_count)} 個。")
-else:
-    st.info("請上傳五個Word檔案以開始分析。")
+        filenames = [f.name for f in uploaded_counts]
+        counts = process_uploaded_files(uploaded_counts, filenames)
+        plot_counts(counts, filenames, display_names)
 
-# 分隔線
-st.markdown("---")
+        # 額外指標：最多月 & 該月關鍵字
+        # 找出哪一個 YYYY-MM 總和最大
+        total = Counter()
+        for d in counts.values():
+            total.update(d)
+        most_month, most_cnt = total.most_common(1)[0]
+        st.metric("🎯 新聞稿最多月份", most_month, f"{most_cnt} 篇")
 
-# 第二部分：新聞稿關鍵詞分析
-st.header("單篇新聞稿關鍵詞分析")
-uploaded_file_keyword = st.file_uploader("上傳單個Word檔案以進行關鍵詞分析", type="docx")
-
-if uploaded_file_keyword is not None:
-    try:
-        file_bytes = uploaded_file_keyword.getvalue()  # 使用 getvalue() 獲取檔案內容
-        document = Document(io.BytesIO(file_bytes))
-        text_for_analysis = "\n".join([para.text for para in document.paragraphs])
-        pattern = r"\b(2020|2021|2022|2023|2024|2025)-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])\b"
-        matches = re.findall(pattern, text_for_analysis)
-        year_months = [f"{y}-{m}" for y, m, d in matches]
-        counts = Counter(year_months)
-        
-        years = list(range(2020, 2026))
-        months = [f"{i:02d}" for i in range(1, 13)]
-        data = []
-        for y in years:
-            row = {'year': y}
-            for m in months:
-                row[m] = counts.get(f"{y}-{m}", 0)
-            data.append(row)
-        
-        df = pd.DataFrame(data)
-        st.subheader("新聞稿每月數量統計")
-        st.dataframe(df)
-        
-        df_long = df.melt(id_vars='year', value_vars=months, var_name='month', value_name='count')
-        df_long['date'] = pd.to_datetime(df_long['year'].astype(str) + '-' + df_long['month'])
-        df_long = df_long[df_long['date'] <= '2025-04-30']
-        df_long = df_long.sort_values('date')
-        
-        fig, ax = plt.subplots(figsize=(12, 6))
-        ax.plot(df_long['date'], df_long['count'], marker='o')
-        ax.set_xlabel('日期')
-        ax.set_ylabel('新聞稿數量')
-        ax.set_title('新聞稿每月數量 (2020–2025.04)')
-        plt.xticks(rotation=45)
-        plt.grid(True)
-        plt.tight_layout()
-        st.pyplot(fig)
-    except Exception as e:
-        st.error(f"Error processing document: {e}")
-
-# 分隔線
-st.markdown("---")
-
-# 第三部分：新聞列表解析與全文爬取
-st.header("新聞列表解析與全文爬取")
-uploaded_file_list = st.file_uploader("上傳包含新聞列表的Word檔案", type="docx", key="file_uploader_list")
-
-if uploaded_file_list:
-    try:
-        file_bytes = uploaded_file_list.getvalue()  # 使用 getvalue() 獲取檔案內容
-        all_items = parse_list_docx(file_bytes)
-        
-        if all_items:
-            st.success(f"✅ 擷取到 {len(all_items)} 篇新聞列表")
-            
-            contents = []
-            titles = []
-            
-            # Use st.spinner() to show a loading message during scraping
-            with st.spinner(f"⏳ 正在爬取全部 {len(all_items)} 篇新聞稿全文..."):
-                for i, item in enumerate(all_items):
-                    titles.append(item["title"])
-                    if item["url"].startswith("http"):
-                        content = fetch_content(item["url"])
-                        contents.append(content)
-                    else:
-                        contents.append("")
-            
-            successful_fetches = sum(1 for c in contents if c)
-            st.success(f"✅ 完成，共成功擷取 {successful_fetches} 篇內容。")
-        else:
-            st.warning("未能從文件中擷取到新聞列表，請確認文件格式是否正確。")
-    except Exception as e:
-        st.error(f"處理文件時發生錯誤: {e}")
-        
-        all_text = "\n".join(contents)
-        keywords_weighted = jieba.analyse.extract_tags(
-            all_text, topK=30, withWeight=True, allowPOS=("n", "v", "vn", "nr", "ns")
+        # 抓出該月所有段落，做前20關鍵詞
+        segments = []
+        # 重新讀段落以保留文字
+        date_re = re.compile(
+            r"\b(202[0-5])[-/年\.](0?[1-9]|1[0-2])[-/月\.](0?[1-9]|[12]\d|3[01])日?\b"
         )
-        
-        st.subheader("前 30 關鍵詞（含權重）")
-        for word, weight in keywords_weighted:
-            st.write(f"{word}: {weight:.3f}")
-        
-        filtered_keywords = [w for w, weight in keywords_weighted]
-        all_words = jieba.lcut(all_text)
-        filtered_words = [w for w in all_words if w in filtered_keywords and len(w) > 1]
-        freq_counter = Counter(filtered_words)
-        
-        st.subheader("關鍵詞出現頻率")
-        st.bar_chart(pd.DataFrame(freq_counter.most_common(20), columns=["關鍵詞", "出現次數"]).set_index("關鍵詞"))
-    except Exception as e:
-        st.error(f"Error processing document list: {e}")
+        for up in uploaded_counts:
+            doc = Document(io.BytesIO(up.getvalue()))
+            for p in doc.paragraphs:
+                m = date_re.search(p.text)
+                if m:
+                    ym = f"{m.group(1)}-{int(m.group(2)):02d}"
+                    if ym == most_month:
+                        segments.append(p.text)
+
+        words = []
+        for seg in segments:
+            words += [w for w in jieba.lcut(seg) if len(w) > 1]
+        top20 = Counter(words).most_common(20)
+
+        st.subheader(f"📑 {most_month} 前20關鍵詞")
+        cols = st.columns(2)
+        for i, (w, cnt) in enumerate(top20):
+            cols[i % 2].write(f"{i+1}. {w}：{cnt}")
+
+# 2️⃣ 單篇關鍵詞分析
+st.markdown("---")
+st.header("2. 單篇新聞稿關鍵詞分析")
+
+uploaded_kw = st.file_uploader(
+    "上傳單一 .docx 進行關鍵詞分析", type="docx", key="uploader_kw"
+)
+if uploaded_kw:
+    data = uploaded_kw.getvalue()
+    doc = Document(io.BytesIO(data))
+    txt = "\n".join(p.text for p in doc.paragraphs)
+    tags = jieba.analyse.extract_tags(txt, topK=30, withWeight=True)
+    st.subheader("前30關鍵詞 (含權重)")
+    for w, wt in tags:
+        st.write(f"{w}：{wt:.3f}")
+
+# 3️⃣ 列表解析與全文爬取
+st.markdown("---")
+st.header("3. 新聞列表解析與全文爬取")
+
+uploaded_list = st.file_uploader(
+    "上傳含列表的 .docx (格式：[YYYY-MM-DD] 標題 http...)", 
+    type="docx", key="uploader_list"
+)
+if uploaded_list:
+    data = uploaded_list.getvalue()
+    items = parse_list_docx(data)
+    if items:
+        st.success(f"共解析到 {len(items)} 則新聞")
+        # 顯示標題與連結
+        for it in items:
+            st.write(f"- {it['date'].date()}  [{it['title']}]({it['url']})")
+        # 爬取全文
+        contents = []
+        with st.spinner("爬取中..."):
+            for it in tqdm(items):
+                contents.append(fetch_content(it["url"]))
+        st.success(f"成功爬取 {sum(bool(c) for c in contents)} 篇")
+        full_text = "\n\n".join(contents)
+        st.subheader("全文摘要前 500 字")
+        st.write(full_text[:500] + "...")
+    else:
+        st.warning("未能解析任何列表項目，請確認格式。")
