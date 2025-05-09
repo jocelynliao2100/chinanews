@@ -1,6 +1,8 @@
 streamlit
-pandas
 python-docx
+pandas
 matplotlib
-plotly
 jieba
+beautifulsoup4
+lxml
+requests
