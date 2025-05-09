@@ -47,7 +47,7 @@ fig = go.Figure(data=go.Scattergeo(
         color=df['次数'],
         colorscale='Reds',
         opacity=0.8,
-        colorbar=dict(title="出现次数")
+        colorbar=dict(title="出現次數")
     ),
 ))
 
